@@ -1,0 +1,752 @@
+{
+  "playbooks": [
+    {
+      "threat_type": "brute_force",
+      "display_name": "Authentication Brute Force",
+      "description": "Multiple failed authentication attempts followed by a successful login or a sustained high volume of failed attempts targeting an account or service.",
+      "severity": "Medium",
+      "mitre_attack": {
+        "technique_id": "T1110",
+        "technique_name": "Brute Force"
+      },
+      "indicators": [
+        "High volume of Event ID 4625 (Failed Logon)",
+        "Login attempts from multiple geolocations in a short timeframe",
+        "Targeting of default administrative accounts (e.g., admin, root, administrator)"
+      ],
+      "detection_patterns": [
+        "Count of failed logins > 20 within 5 minutes for a single user",
+        "Failed logins from > 5 distinct IPs for a single user within 15 minutes",
+        "Failed login burst followed by successful login (Event ID 4624) from the same IP"
+      ],
+      "response_steps": [
+        "Verify the source IP of the anomalous login attempts.",
+        "Determine if a successful login occurred after the failed attempts.",
+        "Check for subsequent anomalous activity (e.g., MFA modification, new inbox rules) if login was successful.",
+        "Identify if the targeted service is internal or externally facing."
+      ],
+      "containment_actions": [
+        "reset password",
+        "block IP",
+        "revoke tokens"
+      ],
+      "investigation_queries": [
+        "index=windows sourcetype=WinEventLog:Security EventCode=4625 | stats count by TargetUserName, IpAddress | where count > 20",
+        "SigninLogs | where ResultType == '50126' | summarize count() by UserPrincipalName, IPAddress | where count_ > 50"
+      ],
+      "recommended_tools": [
+        "Splunk",
+        "Microsoft Sentinel",
+        "Okta Admin Console"
+      ],
+      "false_positive_checks": [
+        "Verify if the user recently changed their password and has stale cached credentials on a mobile device or background service.",
+        "Check if the source IP is a known corporate gateway or NAT IP causing aggregated login counts."
+      ],
+      "escalation_required": false,
+      "priority_score": 60,
+      "example_logs": [
+        "{'EventCode': 4625, 'TargetUserName': 'jsmith', 'IpAddress': '192.0.2.15', 'WorkstationName': 'DESKTOP-UKN1', 'Status': '0xC000006D'}"
+      ],
+      "incident_summary_template": "At {{time}}, SOC detected a brute force attack originating from {{source_ip}} targeting user {{username}}. {{failed_count}} failed attempts were observed followed by {{successful_or_not}} login. Passwords were reset and IP blocked. No post-compromise activity observed."
+    },
+    {
+      "threat_type": "phishing",
+      "display_name": "Credential Harvesting Phishing",
+      "description": "An email containing a malicious link designed to steal user credentials by spoofing a legitimate corporate or third-party login page.",
+      "severity": "High",
+      "mitre_attack": {
+        "technique_id": "T1566.002",
+        "technique_name": "Phishing: Spearphishing Link"
+      },
+      "indicators": [
+        "Suspicious sender domains resembling legitimate services (e.g., mircosoft-support.com)",
+        "Use of URL shorteners or redirectors in email body",
+        "Subject lines creating false urgency (e.g., 'Action Required: Password Expiry')"
+      ],
+      "detection_patterns": [
+        "Email rule matching known phishing keywords + external sender",
+        "User click detected on URL categorized as 'Newly Registered Domain' or 'Phishing' by web proxy"
+      ],
+      "response_steps": [
+        "Analyze the email headers to identify the true sender and delivery path.",
+        "Extract and detonate the URL in a sandbox to determine the payload/behavior.",
+        "Search mail flow logs to identify all recipients of the campaign.",
+        "Check web proxy/DNS logs to identify which users successfully clicked and reached the malicious domain."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "disable account",
+        "block domain/URL",
+        "purge email from mailboxes"
+      ],
+      "investigation_queries": [
+        "index=email sourcetype=proofpoint recipient=* subject='*Password Expiry*' | table sender, recipient, url",
+        "DeviceNetworkEvents | where RemoteUrl contains 'malicious-domain.com' | project DeviceName, InitiatingProcessAccountName, Timestamp"
+      ],
+      "recommended_tools": [
+        "Proofpoint",
+        "Microsoft Defender for Office 365",
+        "Joe Sandbox",
+        "CrowdStrike"
+      ],
+      "false_positive_checks": [
+        "Verify if the email is an authorized internal phishing simulation.",
+        "Check if the sender is a known marketing or legitimate third-party vendor misidentified by heuristics."
+      ],
+      "escalation_required": true,
+      "priority_score": 85,
+      "example_logs": [
+        "{'timestamp': '2023-10-27T10: 00: 00Z', 'sender': 'admin@office-365-alerts.com', 'recipient': 'tuser@company.com', 'subject': 'URGENT: Verify your account', 'action': 'delivered'}"
+      ],
+      "incident_summary_template": "A phishing campaign utilizing the subject '{{subject}}' was delivered to {{recipient_count}} users. Analysis confirmed the payload was a credential harvesting page. {{click_count}} users clicked the link. Impacted user accounts were disabled, passwords reset, and the malicious domain {{domain}} was blocked at the proxy."
+    },
+    {
+      "threat_type": "ransomware",
+      "display_name": "Ransomware Pre-cursor / Execution",
+      "description": "Detection of tools, behaviors, or file modifications indicative of ransomware deployment, such as shadow copy deletion or mass file encryption.",
+      "severity": "Critical",
+      "mitre_attack": {
+        "technique_id": "T1486",
+        "technique_name": "Data Encrypted for Impact"
+      },
+      "indicators": [
+        "Execution of 'vssadmin.exe delete shadows /all /quiet'",
+        "Mass file renaming with unusual extensions (e.g., .encrypted, .locky)",
+        "Creation of 'read_me.txt' or 'decrypt_instructions.html' in multiple directories"
+      ],
+      "detection_patterns": [
+        "Endpoint EDR alert for shadow copy deletion",
+        "High volume of file modifications/creations in a short time span (>1000 files/min) by a single process",
+        "Detection of known ransomware precursor tools (Cobalt Strike, PsExec, Rclone)"
+      ],
+      "response_steps": [
+        "IMMEDIATELY isolate the affected host(s) from the network.",
+        "Identify the parent process executing the encryption or shadow copy deletion.",
+        "Identify the compromised account used to execute the payload.",
+        "Hunt for lateral movement indicators to identify patient zero and other compromised hosts.",
+        "Preserve memory and disk artifacts for forensics before rebooting or reimaging."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "disable account",
+        "block network segment"
+      ],
+      "investigation_queries": [
+        "index=edr sourcetype=crowdstrike ProcessName=vssadmin.exe CommandLine='*delete shadows*'",
+        "DeviceProcessEvents | where FileName in~ ('vssadmin.exe', 'wbadmin.exe', 'bcdedit.exe') and ProcessCommandLine has_any ('delete', 'recoveryenabled no')"
+      ],
+      "recommended_tools": [
+        "CrowdStrike",
+        "Velociraptor",
+        "Splunk",
+        "Active Directory Users and Computers"
+      ],
+      "false_positive_checks": [
+        "Confirm if the activity is related to an approved IT backup software installation or server migration script.",
+        "Verify if the mass file modification is due to a legitimate developer script compiling large code bases."
+      ],
+      "escalation_required": true,
+      "priority_score": 100,
+      "example_logs": [
+        "{'event_type': 'ProcessCreation', 'host': 'SRV-FILE-01', 'user': 'SYSTEM', 'process': 'vssadmin.exe', 'command_line': 'vssadmin.exe delete shadows /all /quiet', 'parent_process': 'cmd.exe'}"
+      ],
+      "incident_summary_template": "CRITICAL INCIDENT: Ransomware behavior detected on {{host_count}} hosts. Initial vector identified as {{initial_vector}}. Containment achieved via network isolation. Active directory accounts {{compromised_accounts}} have been disabled. Incident Response retainer activated."
+    },
+    {
+      "threat_type": "suspicious_powershell",
+      "display_name": "Obfuscated/Suspicious PowerShell Execution",
+      "description": "Execution of PowerShell commands containing encoded payloads, hidden windows, or execution policy bypasses commonly used by malware.",
+      "severity": "Medium",
+      "mitre_attack": {
+        "technique_id": "T1059.001",
+        "technique_name": "Command and Scripting Interpreter: PowerShell"
+      },
+      "indicators": [
+        "Use of -EncodedCommand, -enc, or -e parameters",
+        "Use of -WindowStyle Hidden or -w hidden",
+        "Use of -ExecutionPolicy Bypass or -ep bypass",
+        "Presence of WebClient.DownloadString or Invoke-WebRequest in command line"
+      ],
+      "detection_patterns": [
+        "PowerShell executed with a base64 string longer than 200 characters",
+        "PowerShell spawning from an unusual parent process (e.g., winword.exe, excel.exe, w3wp.exe)"
+      ],
+      "response_steps": [
+        "Extract and decode the base64 payload to determine the script's intent.",
+        "Check if the script initiated any network connections.",
+        "Identify if the script dropped any secondary payloads or established persistence (e.g., scheduled tasks, registry run keys).",
+        "Review the parent process to determine how PowerShell was invoked."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "kill process",
+        "block IP/domain"
+      ],
+  
+      "recommended_tools": [
+        "CyberChef",
+        "Microsoft Defender",
+        "Sysmon",
+        "Splunk"
+      ],
+      "false_positive_checks": [
+        "Verify if the script is part of an SCCM/Intune deployment.",
+        "Check if legitimate IT administration tools (e.g., RMM agents) utilize encoded PowerShell for routine tasks."
+      ],
+      "escalation_required": false,
+      "priority_score": 75,
+      "example_logs": [
+        "{'EventCode': 4104, 'Level': 'Warning', 'ScriptBlockText': 'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAEkATwAuAE0AZQBtAG8AcgB5AFMAdAByAGUAYQBtACgAWwBDAG8AbgB2AGUAcgB0AF0AOgA6AEYAcgBvAG0AQgBhAHMAZQA2ADQAUwB0AHIAaQBuAGcAKAA...', 'Path': 'powershell.exe'}"
+      ],
+      "incident_summary_template": "Suspicious PowerShell utilizing {{obfuscation_technique}} was detected on {{hostname}}. Decoding the payload revealed an attempt to {{script_action}}. The endpoint was isolated and the command and control IP {{c2_ip}} was blocked on the firewall."
+    },
+    {
+      "threat_type": "data_exfiltration",
+      "display_name": "Anomalous Data Exfiltration",
+      "description": "Unauthorized transfer of data from a computer or network, often detected by unusual outbound traffic volumes or use of unapproved cloud storage.",
+      "severity": "High",
+      "mitre_attack": {
+        "technique_id": "T1048",
+        "technique_name": "Exfiltration Over Alternative Protocol"
+      },
+      "indicators": [
+        "Large outbound network spikes (>1GB) to unknown external IPs or file-sharing sites (Mega, Dropbox, Google Drive)",
+        "Use of command-line tools for transfer (curl, wget, rclone, ftp) on non-developer endpoints",
+"Creation of large archive files (ZIP, RAR, 7z) in staging directories (e.g., C:Temp, C:UsersPublic)"
+      ],
+      "detection_patterns": [
+        "Outbound traffic threshold exceeded for a specific user/host baseline",
+        "DLP (Data Loss Prevention) alert triggering for PII/PCI data match during upload"
+      ],
+      "response_steps": [
+        "Identify the user account and host responsible for the data transfer.",
+        "Determine the destination IP/URL and what service it belongs to.",
+        "Identify the staging directory and analyze the files being compressed/transferred.",
+        "Review host timelines to see what processes accessed sensitive files prior to the exfiltration."
+      ],
+      "containment_actions": [
+        "block IP",
+        "isolate endpoint",
+        "disable account"
+      ],
+      "investigation_queries": [
+        "index=firewall action=allowed direction=outbound | stats sum(bytes_out) as total_out by src_ip, dest_ip | where total_out > 1073741824",
+        "DeviceNetworkEvents | where ActionType == 'ConnectionSuccess' and RemoteUrl has_any ('mega.nz', 'dropbox.com') | summarize sum(LocalPort) by DeviceName"
+      ],
+      "recommended_tools": [
+        "Splunk",
+        "Palo Alto Networks / Firewall Logs",
+        "Forcepoint DLP",
+        "CrowdStrike"
+      ],
+      "false_positive_checks": [
+        "Confirm if the user is performing a legitimate business task, such as uploading marketing videos or sending large datasets to an approved vendor.",
+        "Verify if the destination is an approved corporate cloud application."
+      ],
+      "escalation_required": true,
+      "priority_score": 90,
+      "example_logs": [
+        "{'timestamp': '2023-11-01T14: 22: 11Z', 'src_ip': '10.0.5.55', 'dest_ip': '31.216.144.5', 'app': 'mega_file_sharing', 'bytes_out': 5242880000, 'action': 'allow'}"
+      ],
+      "incident_summary_template": "Anomalous outbound data transfer of {{data_size}} was detected from host {{hostname}} to external destination {{destination_service}}. Investigation confirmed unauthorized exfiltration of {{data_type}} data by user {{username}}. Network access was blocked and the user's account suspended."
+    },
+    {
+      "threat_type": "credential_stuffing",
+      "display_name": "Web Application Credential Stuffing",
+      "description": "Automated attempts to compromise user accounts using large lists of leaked usernames and passwords against web applications.",
+      "severity": "Medium",
+      "mitre_attack": {
+        "technique_id": "T1110.004",
+        "technique_name": "Brute Force: Credential Stuffing"
+      },
+      "indicators": [
+        "High volume of failed logins against a web portal originating from datacenter/proxy/Tor IPs",
+        "Low ratio of successful logins to failed logins across the application",
+        "Login attempts rotating through hundreds of different usernames from a single or small cluster of IPs"
+      ],
+      "detection_patterns": [
+        "WAF alert for credential stuffing signatures",
+        "Distinct IP generating > 100 login requests to /api/v1/login within 5 minutes, targeting different accounts"
+      ],
+      "response_steps": [
+        "Identify the scope of the attack (target URLs, source IPs, timeframe).",
+        "Determine if any accounts were successfully compromised during the attack window.",
+        "For compromised accounts, check for fraudulent activity (e.g., unauthorized purchases, data downloads).",
+        "Deploy WAF rules to rate-limit or block the attacking infrastructure."
+      ],
+      "containment_actions": [
+        "block IP",
+        "reset password",
+        "enable MFA"
+      ],
+      "investigation_queries": [
+        "index=waf sourcetype=f5:bigip:ltm uri='/login' | stats count by client_ip, status | where status=401 and count > 100",
+        "AppTraces | where Name == 'POST /login' | summarize count() by ClientIP, ResultCode"
+      ],
+      "recommended_tools": [
+        "F5 WAF",
+        "Cloudflare",
+        "Splunk",
+        "Auth0 / Okta"
+      ],
+      "false_positive_checks": [
+        "Verify if the traffic originates from a known vulnerability scanner (e.g., Qualys, Nessus) performing authenticated scans.",
+        "Check if an API change caused a legitimate integration to fail authentication repeatedly."
+      ],
+      "escalation_required": false,
+      "priority_score": 65,
+      "example_logs": [
+        "{'timestamp': '2023-11-02T08: 15: 30Z', 'client_ip': '185.15.5.5', 'uri': '/api/auth', 'username': 'jdoe@gmail.com', 'response_code': 401, 'user_agent': 'python-requests/2.25.1'}"
+      ],
+      "incident_summary_template": "A credential stuffing attack targeted the {{application_name}} application from {{time_start}} to {{time_end}}. {{failed_count}} failed attempts were logged. {{success_count}} accounts were compromised. Compromised accounts had passwords reset and MFA enforced. Attacking IPs were added to the WAF blocklist."
+    },
+    {
+      "threat_type": "insider_threat",
+      "display_name": "Malicious Insider Activity",
+      "description": "Unauthorized access, theft, or sabotage of data/systems by an employee or contractor with legitimate access.",
+      "severity": "High",
+      "mitre_attack": {
+        "technique_id": "T1078.003",
+        "technique_name": "Valid Accounts: Local Accounts"
+      },
+      "indicators": [
+        "Accessing sensitive files or databases outside of normal working hours",
+        "A departing employee downloading large volumes of CRM data or source code to a USB drive",
+        "Privilege escalation attempts or probing of internal systems by a non-IT user"
+      ],
+      "detection_patterns": [
+        "UBA (User Behavior Analytics) alert for anomalous access to restricted file shares",
+        "USB insertion event followed by massive file read operations by a user on the HR termination list"
+      ],
+      "response_steps": [
+        "Coordinate immediately with HR and Legal before taking aggressive containment actions.",
+        "Monitor the user's activity silently to gather evidence if instructed by Legal.",
+        "Review endpoint logs for USB usage, cloud storage uploads, and printing activity.",
+        "Identify the classification of the data accessed or exfiltrated."
+      ],
+      "containment_actions": [
+        "disable account",
+        "revoke tokens",
+        "isolate endpoint"
+      ],
+      "investigation_queries": [
+        "index=dlp user=* action=USB_Copy | stats count, values(filename) by user",
+        "DeviceEvents | where ActionType == 'UsbDriveMounted' | join kind=inner (DeviceFileEvents | where ActionType == 'FileCopied') on DeviceId"
+      ],
+      "recommended_tools": [
+        "Splunk UBA",
+        "Forcepoint DLP",
+        "CrowdStrike Falcon",
+        "Active Directory"
+      ],
+      "false_positive_checks": [
+        "Verify with the user's manager if the activity was a directed project or legitimate offline work.",
+        "Check if the bulk data movement was due to an approved device migration or backup."
+      ],
+      "escalation_required": true,
+      "priority_score": 95,
+      "example_logs": [
+        "{'timestamp': '2023-11-03T23: 45: 00Z', 'user': 'bwayne', 'action': 'File_Copy', 'destination': 'E:\\(USB)', 'filename': 'Customer_Database_Q3.csv', 'file_size': 25000000}"
+      ],
+      "incident_summary_template": "Insider threat activity was detected involving user {{username}}. The user transferred {{data_description}} to an unauthorized USB device. Upon coordination with HR and Legal, the user's access was revoked and the endpoint secured for forensic imaging."
+    },
+    {
+      "threat_type": "malware",
+      "display_name": "Commodity Malware Infection",
+      "description": "Detection of known malware families (e.g., Emotet, Trickbot, AgentTesla) executing on an endpoint.",
+      "severity": "High",
+      "mitre_attack": {
+        "technique_id": "T1204.002",
+        "technique_name": "User Execution: Malicious File"
+      },
+      "indicators": [
+        "Antivirus/EDR alerts for known malware signatures or behavioral heuristics",
+        "Unexpected execution of processes from AppData\\Local\\Temp or Roaming directories",
+        "Beaconing traffic to known malicious domains or IPs"
+      ],
+      "detection_patterns": [
+        "EDR block or quarantine event for a Trojan or InfoStealer",
+        "Office application (Word, Excel) spawning cmd.exe or powershell.exe"
+      ],
+      "response_steps": [
+        "Review the EDR alert to determine if the malware was successfully blocked or if execution occurred.",
+        "Identify the infection vector (e.g., email attachment, web download, USB).",
+        "Check proxy logs to see if the malware successfully communicated with its C2 server.",
+        "Perform a full forensic scan of the endpoint to ensure no secondary payloads were dropped."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "kill process",
+        "delete file",
+        "reset password"
+      ],
+      "investigation_queries": [
+        "index=edr sourcetype=crowdstrike event_simpleName=ProcessRollup2 FileName IN (\"*exe\", \"*dll\") FilePath=\"*\\\\AppData\\\\Local\\\\Temp\\\\*\"",
+        "DeviceProcessEvents | where InitiatingProcessFileName in~ ('winword.exe', 'excel.exe') and FileName in~ ('cmd.exe', 'powershell.exe')"
+      ],
+      "recommended_tools": [
+        "CrowdStrike Falcon",
+        "Microsoft Defender for Endpoint",
+        "VirusTotal",
+        "Any.Run"
+      ],
+      "false_positive_checks": [
+        "Verify if the alert triggered on a poorly written custom internal application or a legitimate portable app.",
+        "Check if the file is a known false positive by searching the hash on VirusTotal."
+      ],
+      "escalation_required": false,
+      "priority_score": 80,
+      "example_logs": [
+        "{'timestamp': '2023-11-04T09: 12: 33Z', 'action': 'blocked', 'threat_name': 'Trojan:Win32/AgentTesla.C!cl', 'file_path': 'C:\\Users\\tuser\\AppData\\Local\\Temp\\invoice_8472.exe', 'host': 'DESKTOP-ABC12'}"
+      ],
+      "incident_summary_template": "Malware identified as {{malware_family}} was detected on {{hostname}}. The payload was delivered via {{delivery_method}}. EDR successfully blocked the execution. The host was temporarily isolated for a full scan, and the user's password was reset out of an abundance of caution."
+    },
+    {
+      "threat_type": "privilege_escalation",
+      "display_name": "Local Privilege Escalation",
+      "description": "An attacker or malicious software exploiting vulnerabilities or misconfigurations to gain SYSTEM or Administrator rights on a host.",
+      "severity": "Critical",
+      "mitre_attack": {
+        "technique_id": "T1068",
+        "technique_name": "Exploitation for Privilege Escalation"
+      },
+      "indicators": [
+"A standard user process unexpectedly spawning a process running as NT AUTHORITY\\SYSTEM",
+        "Modification of system services or creation of new services by non-admin users",
+        "Exploitation of known vulnerabilities (e.g., PrintNightmare, ZeroLogon)"
+      ],
+      "detection_patterns": [
+        "EDR alert for token manipulation or suspicious access to lsass.exe",
+        "Creation of a scheduled task running as SYSTEM from a non-privileged context"
+      ],
+      "response_steps": [
+        "Isolate the host immediately, as the attacker now has full control of the OS.",
+        "Identify the exploit or technique used (e.g., unpatched CVE, vulnerable driver, service hijacking).",
+        "Review what actions the attacker took after gaining SYSTEM (e.g., credential dumping, lateral movement).",
+        "Determine how the initial standard user access was obtained."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "disable account"
+      ],
+      "investigation_queries": [
+        "index=windows EventCode=4672 PrivilegeList='*SeDebugPrivilege*' | where NOT user IN ('SYSTEM', 'Administrator')",
+        "DeviceProcessEvents | where ProcessTokenElevationType == 'TokenElevationTypeFull' and InitiatingProcessAccountName != 'SYSTEM'"
+      ],
+      "recommended_tools": [
+        "Microsoft Defender for Endpoint",
+        "Splunk",
+        "Sysmon",
+        "Tenable.sc (for vulnerability correlation)"
+      ],
+      "false_positive_checks": [
+        "Confirm if an IT administrator used Run As Administrator or a PAM solution (e.g., CyberArk, LAPS) to elevate temporarily.",
+        "Check if a legitimate software installer or updater requires SYSTEM level execution and triggered heuristics."
+      ],
+      "escalation_required": true,
+      "priority_score": 95,
+      "example_logs": [
+        "{'EventCode': 4672, 'SubjectUserName': 'standard_user1', 'SubjectDomainName': 'CORP', 'PrivilegeList': 'SeDebugPrivilege, SeAssignPrimaryTokenPrivilege'}"
+      ],
+      "incident_summary_template": "Privilege escalation detected on {{hostname}}. A standard account {{username}} utilized {{exploit_technique}} to gain SYSTEM privileges. Endpoint was isolated. Post-escalation activity included {{post_escalation_activity}}. Host queued for rebuild."
+    },
+    {
+      "threat_type": "lateral_movement",
+      "display_name": "Suspicious Lateral Movement",
+      "description": "Techniques used by adversaries to access and control remote systems on a network, expanding their foothold.",
+      "severity": "High",
+      "mitre_attack": {
+        "technique_id": "T1021.002",
+        "technique_name": "Remote Services: SMB/Windows Admin Shares"
+      },
+      "indicators": [
+        "Use of PsExec, WMI, or WinRM originating from standard workstations rather than IT admin jump boxes",
+        "Access to administrative shares (C$, ADMIN$) over SMB (Port 445)",
+        "Pass-the-Hash (PtH) or Overpass-the-Hash authentication anomalies"
+      ],
+      "detection_patterns": [
+        "Event ID 4624 Type 3 (Network Logon) to a server using a non-admin account accessing ADMIN$",
+        "Service creation (Event ID 7045) containing highly randomized names or known malicious binaries (e.g., PSEXESVC.exe)"
+      ],
+      "response_steps": [
+        "Identify the source host initiating the lateral movement.",
+        "Identify the targeted hosts and verify if the connection was successful.",
+        "Determine the compromised credentials being used for the movement.",
+        "Look for subsequent execution artifacts (e.g., dropped files, PowerShell commands) on the target host."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "disable account",
+        "reset password"
+      ],
+      "investigation_queries": [
+        "index=windows EventCode=4624 LogonType=3 LogonProcessName=NtLmSsp | stats count by SourceNetworkAddress, TargetUserName, Computer",
+        "DeviceEvents | where ActionType == 'ServiceInstalled' and FileName =~ 'PSEXESVC.exe'"
+      ],
+      "recommended_tools": [
+        "Splunk",
+        "Zeek/Corelight",
+        "Microsoft Defender for Identity",
+        "Sysmon"
+      ],
+      "false_positive_checks": [
+        "Verify if the source IP belongs to a vulnerability scanner or an IT management tool (e.g., SCCM, Lansweeper).",
+        "Check if a system administrator is performing remote troubleshooting."
+      ],
+      "escalation_required": true,
+      "priority_score": 90,
+      "example_logs": [
+        "{'EventCode': 7045, 'ServiceName': 'PSEXESVC', 'ServiceFileName': '%SystemRoot%\\\\PSEXESVC.exe', 'AccountName': 'LocalSystem', 'Computer': 'SRV-DB-02'}"
+      ],
+      "incident_summary_template": "Lateral movement detected originating from {{source_host}} targeting {{target_hosts}}. The adversary utilized {{technique}} (e.g., PsExec, WMI) under the context of compromised account {{username}}. Source and target hosts have been isolated, and credentials rotated."
+    },
+    {
+      "threat_type": "command_and_control",
+      "display_name": "Command and Control Beaconing",
+      "description": "Consistent, periodic network traffic from an internal host to an external infrastructure, indicating an established malware C2 channel.",
+      "severity": "Critical",
+      "mitre_attack": {
+        "technique_id": "T1071.001",
+        "technique_name": "Application Layer Protocol: Web Protocols"
+      },
+      "indicators": [
+        "Regular HTTP/HTTPS requests to an external IP or domain with consistent timing (e.g., exactly every 5 minutes)",
+        "Use of non-standard ports or protocols (e.g., IRC, custom TCP protocols)",
+        "Domain Generation Algorithm (DGA) domains in DNS queries",
+        "High volume of connections to newly registered or uncategorized domains"
+      ],
+      "detection_patterns": [
+        "Proxy logs showing repetitive requests to the same URL with equal byte sizes",
+        "Firewall/Zeek detecting beacon-like timing patterns (low jitter)",
+        "EDR alerting on a suspicious process initiating external network connections"
+      ],
+      "response_steps": [
+        "Isolate the internal host to cut off the C2 channel.",
+        "Analyze proxy/firewall logs to identify the destination IP, domain, and URL.",
+        "Identify the process on the host generating the traffic.",
+        "Perform a reverse lookup and threat intelligence check on the C2 infrastructure.",
+        "Determine if any data exfiltration occurred over the C2 channel."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "block IP",
+        "block domain"
+      ],
+      "investigation_queries": [
+        "index=proxy | stats count, stdev(duration) as time_variance by src_ip, dest_domain | where count > 1000 and time_variance < 5",
+        "DeviceNetworkEvents | where ActionType == 'ConnectionSuccess' | summarize count() by RemoteUrl, InitiatingProcessFileName | order by count_ desc"
+      ],
+      "recommended_tools": [
+        "Zeek / Corelight",
+        "Palo Alto Networks",
+        "CrowdStrike",
+        "ThreatConnect / MISP"
+      ],
+      "false_positive_checks": [
+        "Verify if the traffic is legitimate software updates (e.g., WSUS, antivirus definition updates) or NTP synchronization.",
+        "Check if a legitimate web application utilizes long-polling or repetitive keep-alive API calls."
+      ],
+      "escalation_required": true,
+      "priority_score": 95,
+      "example_logs": [
+        "{'timestamp': '2023-11-05T12: 00: 00Z', 'src_ip': '10.10.20.45', 'dest_domain': 'bad-c2-server.com', 'method': 'POST', 'uri': '/api/v1/update', 'bytes_out': 145, 'bytes_in': 512}"
+      ],
+      "incident_summary_template": "C2 beaconing was detected from host {{hostname}} communicating with {{c2_domain_or_ip}}. Traffic analysis indicated a {{protocol}} channel established by process {{process_name}}. The host was isolated and the C2 IOCs added to the firewall blocklist. Full forensic investigation initiated."
+    },
+    {
+      "threat_type": "web_shell",
+      "display_name": "Web Shell Installation and Activity",
+      "description": "A malicious script (PHP, ASPX, JSP) uploaded to a web server to maintain persistent access and execute arbitrary commands.",
+      "severity": "Critical",
+      "mitre_attack": {
+        "technique_id": "T1505.003",
+        "technique_name": "Server Software Component: Web Shell"
+      },
+      "indicators": [
+        "Creation of new .php, .aspx, or .jsp files in web-accessible directories",
+        "HTTP requests to specific scripts that result in commands being executed by the web server process (e.g., w3wp.exe, apache2, nginx)",
+        "Unusual POST requests to typically static directories (e.g., /images/)"
+      ],
+      "detection_patterns": [
+        "File Integrity Monitoring (FIM) alert for new script file in web root",
+        "EDR alert: Web server process spawning cmd.exe, bash, or whoami",
+        "WAF alert for common web shell commands in HTTP parameters"
+      ],
+      "response_steps": [
+        "Acquire a copy of the suspected web shell file for analysis.",
+        "Review web access logs to identify the source IP that uploaded the shell and interacted with it.",
+        "Review EDR/process logs to see what commands the attacker executed via the shell.",
+        "Determine the initial vulnerability exploited to upload the shell (e.g., unrestricted file upload, RCE vulnerability)."
+      ],
+      "containment_actions": [
+        "isolate endpoint",
+        "block IP",
+        "delete file"
+      ],
+      "investigation_queries": [
+        "index=edr (ParentImage='*w3wp.exe' OR ParentImage='*httpd.exe' OR ParentImage='*nginx*') Image='*cmd.exe' OR Image='*sh'",
+        "index=web sourcetype=access_combined method=POST uri='*.php' status=200 | stats count by client_ip, uri"
+      ],
+      "recommended_tools": [
+        "CrowdStrike",
+        "Splunk",
+        "F5 WAF",
+        "Tripwire / FIM"
+      ],
+      "false_positive_checks": [
+        "Verify with web developers if the file is a legitimate administrative script or API endpoint recently deployed.",
+        "Check if scheduled tasks or cron jobs legitimately trigger scripts that spawn shells."
+      ],
+      "escalation_required": true,
+      "priority_score": 100,
+      "example_logs": [
+        "{'event_type': 'ProcessCreation', 'host': 'WEBSERV-01', 'parent_process': 'w3wp.exe', 'process': 'cmd.exe', 'command_line': 'cmd.exe /c whoami', 'user': 'IIS APPPOOL\\\\DefaultAppPool'}"
+      ],
+      "incident_summary_template": "A web shell identified as {{filename}} was detected on internet-facing server {{hostname}}. The attacker accessed the shell from IP {{attacker_ip}} and executed commands including {{commands_executed}}. The server was isolated, the shell removed, and the underlying upload vulnerability is being patched."
+    },
+    {
+      "threat_type": "sql_injection",
+      "display_name": "SQL Injection (SQLi) Attack",
+      "description": "Insertion or injection of a SQL query via input data from the client to the application, attempting to manipulate the backend database.",
+      "severity": "High",
+      "mitre_attack": {
+        "technique_id": "T1190",
+        "technique_name": "Exploit Public-Facing Application"
+      },
+      "indicators": [
+        "HTTP GET/POST parameters containing SQL syntax (e.g., UNION SELECT, OR 1=1, WAITFOR DELAY)",
+        "Database errors returned in HTTP response bodies",
+        "Unusual database queries originating from the web application account that dump large tables"
+      ],
+      "detection_patterns": [
+        "WAF alert for SQLi signatures in URI or Payload",
+        "Database monitoring tool alerts on massive data extraction or schema querying from the app service account"
+      ],
+      "response_steps": [
+        "Validate if the attack was successful by checking HTTP response codes (e.g., 200 OK vs 500 Error) and response sizes.",
+        "Correlate WAF logs with backend Database logs to see if the malicious query actually executed.",
+        "Identify the vulnerable endpoint/parameter.",
+        "Check if sensitive data (PII, credentials) was exfiltrated."
+      ],
+      "containment_actions": [
+        "block IP",
+        "enable WAF blocking mode"
+      ],
+      "investigation_queries": [
+        "index=waf attack_type=SQLi | stats count by client_ip, uri, payload",
+        "index=database sourcetype=db_audit user=webapp_user query='*UNION SELECT*' OR query='*information_schema*'"
+      ],
+      "recommended_tools": [
+        "F5 WAF",
+        "Imperva / Guardium",
+        "Splunk"
+      ],
+      "false_positive_checks": [
+        "Verify if a legitimate application feature passes complex queries or names with apostrophes (e.g., O'Connor) that trigger weak WAF rules.",
+        "Confirm if the activity is an authorized penetration test or DAST scanner."
+      ],
+      "escalation_required": true,
+      "priority_score": 85,
+      "example_logs": [
+        "{'timestamp': '2023-11-06T14: 22: 00Z', 'client_ip': '203.0.113.50', 'uri': '/products.php', 'query_string': 'id=10 OR 1=1--', 'waf_action': 'alert', 'response_code': 200}"
+      ],
+      "incident_summary_template": "SQL Injection attack detected targeting the {{application_url}} endpoint. The attacker attempted to inject {{payload_snippet}}. Analysis of database logs indicates the query {{was_was_not}} successful. WAF rules were updated to block the attack and developers notified to sanitize inputs."
+    },
+    {
+      "threat_type": "ddos",
+      "display_name": "Distributed Denial of Service (DDoS)",
+      "description": "A malicious attempt to disrupt the normal traffic of a targeted server, service, or network by overwhelming the target with a flood of Internet traffic.",
+      "severity": "High",
+      "mitre_attack": {
+        "technique_id": "T1498",
+        "technique_name": "Network Denial of Service"
+      },
+      "indicators": [
+        "Massive spike in inbound network traffic (bandwidth or packets-per-second)",
+        "Service degradation or complete unavailability of external-facing applications",
+        "High volume of SYN, UDP, or ICMP packets from highly distributed source IPs"
+      ],
+      "detection_patterns": [
+        "ISP or Anti-DDoS provider (Cloudflare, Akamai) alerts triggering for volumetric attack thresholds",
+        "Firewall CPU utilization spiking to 100% due to state table exhaustion"
+      ],
+      "response_steps": [
+        "Determine the type of DDoS attack (Volumetric, Protocol/State-exhaustion, or Application Layer/Layer 7).",
+        "Identify the targeted public IPs or URLs.",
+        "Engage the DDoS mitigation provider (e.g., Cloudflare, Akamai, AWS Shield) to verify automated mitigation is active or to request manual intervention.",
+        "Monitor backend infrastructure health to ensure the attack is not a smokescreen for intrusion."
+      ],
+      "containment_actions": [
+        "block IP",
+        "enable DDoS mitigation routing"
+      ],
+      "investigation_queries": [
+        "index=netflow | stats sum(bytes) as total_bytes by dest_ip | sort - total_bytes",
+        "index=waf uri='/login' | timechart span=1m count by client_ip"
+      ],
+      "recommended_tools": [
+        "Cloudflare / Akamai / Arbor Networks",
+        "Kentik / NetFlow Analyzer",
+        "Datadog / New Relic (for uptime monitoring)"
+      ],
+      "false_positive_checks": [
+        "Check if the traffic spike is due to a legitimate marketing event, product launch, or viral social media post (Flash Crowd).",
+        "Verify if an internal script or misconfigured API client is causing an unintentional self-DDoS."
+      ],
+      "escalation_required": true,
+      "priority_score": 90,
+      "example_logs": [
+        "{'timestamp': '2023-11-07T16: 05: 00Z', 'alert': 'Volumetric DDoS Detected', 'target_ip': '198.51.100.10', 'attack_type': 'UDP Flood', 'bandwidth_gbps': 45.2, 'status': 'mitigating'}"
+      ],
+      "incident_summary_template": "A {{ddos_type}} DDoS attack targeted {{target_asset}} peaking at {{bandwidth_volume}}. Automated mitigation by {{ddos_provider}} successfully absorbed the traffic. Service experienced degradation for {{downtime_duration}} minutes before fully recovering. No secondary attacks detected during the event."
+    },
+    {
+      "threat_type": "impossible_travel",
+      "display_name": "Impossible Travel Authentication",
+      "description": "A user logging into a service from two geographically distant locations within a timeframe that is physically impossible to travel between.",
+      "severity": "Medium",
+      "mitre_attack": {
+        "technique_id": "T1078",
+        "technique_name": "Valid Accounts"
+      },
+      "indicators": [
+        "Successful logins for the same user from US and Asia within 1 hour",
+        "Authentication originating from a country where the organization does not operate or have employees"
+      ],
+      "detection_patterns": [
+        "SIEM/IdP alert calculating the distance and time between two consecutive logins and exceeding reasonable speed (e.g., > 1000 km/h)"
+      ],
+      "response_steps": [
+        "Determine which of the two logins represents the user's true location.",
+        "Check if the anomalous login utilized a VPN, Proxy, or Tor node.",
+        "Verify if MFA was satisfied for the anomalous login.",
+        "Review activity logs for the anomalous session to identify any malicious actions (e.g., inbox rule creation, file downloads)."
+      ],
+      "containment_actions": [
+        "reset password",
+        "revoke tokens",
+        "enable MFA"
+      ],
+      "investigation_queries": [
+        "SigninLogs | where UserPrincipalName == 'user@domain.com' | project TimeGenerated, IPAddress, Location, ClientAppUsed, AppDisplayName | order by TimeGenerated desc",
+        "index=okta eventType=user.session.start | transaction user maxspan=4h | search eventcount>1 | table user, src_ip, geolocation"
+      ],
+      "recommended_tools": [
+        "Azure AD / Entra ID",
+        "Okta",
+        "Splunk"
+      ],
+      "false_positive_checks": [
+        "Verify if the user connected to a corporate or personal VPN that routes traffic out of a different country.",
+        "Check if the login was from a cloud-hosted application or server (e.g., a script running in AWS us-east-1) logging in on the user's behalf."
+      ],
+      "escalation_required": false,
+      "priority_score": 50,
+      "example_logs": [
+        "{'user': 'asmith', 'login_1_time': '08: 00: 00', 'login_1_ip': '65.20.10.1 (New York, US)', 'login_2_time': '08: 15: 00', 'login_2_ip': '185.44.20.1 (London, UK)', 'alert': 'Impossible Travel Detected'}"
+      ],
+      "incident_summary_template": "Impossible travel was detected for user {{username}} with logins originating from {{location_1}} and {{location_2}} within {{timeframe}}. Investigation revealed the foreign login was {{malicious_or_benign_vpn}}. User sessions were revoked and password reset enforced."
+    }
+  ]
+}
